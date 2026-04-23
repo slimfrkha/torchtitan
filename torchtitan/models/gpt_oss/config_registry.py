@@ -14,7 +14,7 @@ from torchtitan.config import (
     ParallelismConfig,
     TrainingConfig,
 )
-from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
+from torchtitan.hf_datasets.text import HuggingFaceTextDataLoader
 from torchtitan.trainer import Trainer
 
 from . import model_registry

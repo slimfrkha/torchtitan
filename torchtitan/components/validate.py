@@ -19,7 +19,7 @@ from torchtitan.components.tokenizer import BaseTokenizer
 from torchtitan.config import Configurable, ParallelismConfig
 from torchtitan.distributed import ParallelDims, utils as dist_utils
 from torchtitan.distributed.context_parallel import prepare_context_parallel_input
-from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
+from torchtitan.hf_datasets.text import HuggingFaceTextDataLoader
 from torchtitan.protocols import BaseModel
 from torchtitan.tools import utils
 from torchtitan.tools.logging import logger
