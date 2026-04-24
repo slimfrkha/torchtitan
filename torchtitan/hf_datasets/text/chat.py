@@ -226,7 +226,32 @@ class ChatDataset(HFDatasetBase):
         self._pending_label_ids = state_dict["pending_label_ids"]
 
 
-class ChatDataLoader(HFDataLoader):
+class _ChatDatasetMixin:
+    """Shared _build_dataset for single- and multi-source chat loaders."""
+
+    def _build_dataset(
+        self,
+        source,
+        *,
+        tokenizer: BaseTokenizer,
+        seq_len: int,
+        dp_rank: int,
+        dp_world_size: int,
+        local_batch_size: int,
+    ):
+        dataset = load_dataset(source.dataset_path, **source.load_dataset_kwargs)
+        return ChatDataset(
+            dataset=dataset,  # pyrefly: ignore [bad-argument-type]
+            tokenizer=tokenizer,
+            sample_processor=source.sample_processor,
+            seq_len=seq_len,
+            dp_rank=dp_rank,
+            dp_world_size=dp_world_size,
+            infinite=source.infinite,
+        )
+
+
+class ChatDataLoader(_ChatDatasetMixin, HFDataLoader):
     """Chat dataloader for instruction/conversation datasets."""
 
     @dataclass(kw_only=True, slots=True)
@@ -247,27 +272,6 @@ class ChatDataLoader(HFDataLoader):
                     "(e.g., 'openai/gsm8k' or 'json')."
                 )
 
-    def _build_dataset(
-        self,
-        source,
-        *,
-        tokenizer: BaseTokenizer,
-        seq_len: int,
-        dp_rank: int,
-        dp_world_size: int,
-        local_batch_size: int,
-    ):
-        dataset = load_dataset(source.dataset_path, **source.load_dataset_kwargs)
-        return ChatDataset(
-            dataset=dataset,  # pyrefly: ignore [bad-argument-type]
-            tokenizer=tokenizer,
-            sample_processor=source.sample_processor,
-            seq_len=seq_len,
-            dp_rank=dp_rank,
-            dp_world_size=dp_world_size,
-            infinite=source.infinite,
-        )
-
 
 @dataclass(kw_only=True, slots=True)
 class ChatDataSource(ChatDataLoader.Config):
@@ -277,31 +281,10 @@ class ChatDataSource(ChatDataLoader.Config):
     """Data Source sampling weight"""
 
 
-class InterleavedChatDataLoader(InterleavedHFDataLoader):
+class InterleavedChatDataLoader(_ChatDatasetMixin, InterleavedHFDataLoader):
     """Configurable chat dataloader that wraps multiple ChatDataset."""
 
     @dataclass(kw_only=True, slots=True)
     class Config(InterleavedHFDataLoader.Config):
         sources: list[ChatDataSource] = field(default_factory=list)
         """List of datasources to interleave"""
-
-    def _build_dataset(
-        self,
-        source,
-        *,
-        tokenizer: BaseTokenizer,
-        seq_len: int,
-        dp_rank: int,
-        dp_world_size: int,
-        local_batch_size: int,
-    ):
-        dataset = load_dataset(source.dataset_path, **source.load_dataset_kwargs)
-        return ChatDataset(
-            dataset=dataset,  # pyrefly: ignore [bad-argument-type]
-            tokenizer=tokenizer,
-            sample_processor=source.sample_processor,
-            seq_len=seq_len,
-            dp_rank=dp_rank,
-            dp_world_size=dp_world_size,
-            infinite=source.infinite,
-        )

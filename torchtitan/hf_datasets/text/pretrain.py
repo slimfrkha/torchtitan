@@ -168,7 +168,31 @@ class HuggingFaceTextDataset(HFDatasetBase):
         self._positions_buffer = state_dict.get("positions_buffer", [])
 
 
-class HuggingFaceTextDataLoader(HFDataLoader):
+class _HFTextDatasetMixin:
+    """Shared _build_dataset for single- and multi-source text pretrain loaders."""
+
+    def _build_dataset(
+        self,
+        source,
+        *,
+        tokenizer: BaseTokenizer,
+        seq_len: int,
+        dp_rank: int,
+        dp_world_size: int,
+        local_batch_size: int,
+    ):
+        return HuggingFaceTextDataset(
+            dataset_name=source.dataset,
+            dataset_path=source.dataset_path,
+            tokenizer=tokenizer,
+            seq_len=seq_len,
+            dp_rank=dp_rank,
+            dp_world_size=dp_world_size,
+            infinite=source.infinite,
+        )
+
+
+class HuggingFaceTextDataLoader(_HFTextDatasetMixin, HFDataLoader):
     """Configurable text dataloader that wraps HuggingFaceTextDataset.
 
     This dataloader can be used for both training and validation by
@@ -180,26 +204,6 @@ class HuggingFaceTextDataLoader(HFDataLoader):
         dataset: str = "c4_test"
         """Dataset to use"""
 
-    def _build_dataset(
-        self,
-        source,
-        *,
-        tokenizer: BaseTokenizer,
-        seq_len: int,
-        dp_rank: int,
-        dp_world_size: int,
-        local_batch_size: int,
-    ):
-        return HuggingFaceTextDataset(
-            dataset_name=source.dataset,
-            dataset_path=source.dataset_path,
-            tokenizer=tokenizer,
-            seq_len=seq_len,
-            dp_rank=dp_rank,
-            dp_world_size=dp_world_size,
-            infinite=source.infinite,
-        )
-
 
 @dataclass(kw_only=True, slots=True)
 class HFDataSource(HuggingFaceTextDataLoader.Config):
@@ -209,30 +213,10 @@ class HFDataSource(HuggingFaceTextDataLoader.Config):
     """Data Source sampling weight"""
 
 
-class InterleavedHuggingFaceTextDataLoader(InterleavedHFDataLoader):
+class InterleavedHuggingFaceTextDataLoader(_HFTextDatasetMixin, InterleavedHFDataLoader):
     """Configurable text dataloader that wraps multiple HuggingFaceTextDataset."""
 
     @dataclass(kw_only=True, slots=True)
     class Config(InterleavedHFDataLoader.Config):
         sources: list[HFDataSource] = field(default_factory=lambda: [HFDataSource()])
         """List of datasources to interleave"""
-
-    def _build_dataset(
-        self,
-        source,
-        *,
-        tokenizer: BaseTokenizer,
-        seq_len: int,
-        dp_rank: int,
-        dp_world_size: int,
-        local_batch_size: int,
-    ):
-        return HuggingFaceTextDataset(
-            dataset_name=source.dataset,
-            dataset_path=source.dataset_path,
-            tokenizer=tokenizer,
-            seq_len=seq_len,
-            dp_rank=dp_rank,
-            dp_world_size=dp_world_size,
-            infinite=source.infinite,
-        )
