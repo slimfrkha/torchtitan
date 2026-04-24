@@ -80,5 +80,20 @@ class TestParallelAwareDataloader(unittest.TestCase):
         self.assertEqual(dataloader.batch_size, explicit_batch_size)
 
 
+class TestLoadStateDictWorldSizeMismatch(unittest.TestCase):
+    def test_world_size_mismatch_raises_assertion_error(self):
+        """Restoring a checkpoint into a loader with a different dp_world_size must fail."""
+        loader = ParallelAwareDataloader(
+            DummyDataset(), dp_rank=0, dp_world_size=2, batch_size=4
+        )
+        sd = loader.state_dict()
+
+        loader2 = ParallelAwareDataloader(
+            DummyDataset(), dp_rank=0, dp_world_size=4, batch_size=4
+        )
+        with self.assertRaises(AssertionError):
+            loader2.load_state_dict(sd)
+
+
 if __name__ == "__main__":
     unittest.main()

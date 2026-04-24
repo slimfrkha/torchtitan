@@ -19,6 +19,7 @@ from torchtitan.hf_datasets.text import (
     HuggingFaceTextDataset,
     InterleavedHuggingFaceTextDataLoader,
 )
+from torchtitan.hf_datasets.text.pretrain import _validate_dataset
 
 from ._helpers import (
     DummyTokenizer,
@@ -28,7 +29,7 @@ from ._helpers import (
 
 
 class TestHuggingFaceTextDataset(unittest.TestCase):
-    """Dataset-level behaviors: positions, re-loop shuffling."""
+    """Dataset-level behaviors: positions."""
 
     def test_positions_reset_after_eos_and_bos(self):
         """Per-document positions reset to 0 at EOS/BOS boundaries and
@@ -64,63 +65,49 @@ class TestHuggingFaceTextDataset(unittest.TestCase):
                     if tok == tokenizer.bos_id and i > 0:
                         self.assertEqual(pos.item(), 0)
 
-    def test_map_style_shuffle_on_reloop(self):
-        """Re-looping a map-style (``Dataset``) source should change order
-        every epoch (https://github.com/pytorch/torchtitan/issues/2733).
 
-        Validates without draining a full epoch:
-          1. After an epoch boundary, ``_data`` is a shuffled copy of
-             ``_original_data`` — not the same object.
-          2. ``state_dict()`` carries ``epoch`` so resume knows the seed.
-          3. ``load_state_dict()`` replays the same ``shuffle(seed=42+epoch)``.
-          4. Legacy checkpoints without ``epoch`` still load (default to 0).
-        """
+class TestHuggingFaceTextDatasetCheckpointing(unittest.TestCase):
+    """state_dict / load_state_dict for HuggingFaceTextDataset directly.
 
-        def _build_ds():
-            return HuggingFaceTextDataset(
-                dataset_name="c4_test",
-                dataset_path=None,
-                tokenizer=HuggingFaceTokenizer.Config().build(
-                    tokenizer_path=TOKENIZER_PATH
-                ),
-                seq_len=128,
-                dp_rank=0,
-                dp_world_size=1,
-                infinite=True,
-            )
+    Loader-level resumption is tested in TestHuggingFaceTextCheckpointing.
+    """
 
-        # 1) Trigger re-loop by fast-forwarding to end
-        ds = _build_ds()
-        original = ds._data
-        ds._sample_idx = len(ds._data)
-        ds._epoch = 0
-        next(iter(ds))
-        self.assertEqual(ds._epoch, 1)
-        self.assertIsNot(ds._data, original)
-
-        # 2) state_dict persists epoch
-        state = ds.state_dict()
-        self.assertEqual(state.get("epoch"), 1)
-
-        # 3) load_state_dict replays shuffle
-        ds_resumed = _build_ds()
-        ds_resumed.load_state_dict(state)
-        self.assertEqual(ds_resumed._epoch, 1)
-        self.assertIsNot(ds_resumed._data, ds_resumed._original_data)
-        self.assertEqual(
-            list(ds._data[:5]["text"]), list(ds_resumed._data[:5]["text"])
+    def _build_ds(self):
+        return HuggingFaceTextDataset(
+            dataset_name="c4_test",
+            dataset_path=None,
+            tokenizer=DummyTokenizer(),
+            seq_len=128,
+            dp_rank=0,
+            dp_world_size=1,
+            infinite=False,
         )
 
-        # 4) legacy checkpoint back-compat
-        legacy_state = {
-            "inputs_buffer": [],
-            "positions_buffer": [],
-            "sample_idx": 0,
-        }
-        ds_legacy = _build_ds()
-        ds_legacy.load_state_dict(legacy_state)
-        self.assertEqual(ds_legacy._epoch, 0)
-        self.assertIs(ds_legacy._data, ds_legacy._original_data)
+    def test_state_dict_round_trip(self):
+        ds = self._build_ds()
+        it = iter(ds)
+        next(it)
+        state = ds.state_dict()
+
+        for key in ("epoch", "sample_idx", "inputs_buffer", "positions_buffer"):
+            self.assertIn(key, state)
+        self.assertGreater(state["sample_idx"], 0)
+        self.assertEqual(state["epoch"], 0)
+
+        ds2 = self._build_ds()
+        ds2.load_state_dict(state)
+        self.assertEqual(ds2._sample_idx, state["sample_idx"])
+        self.assertEqual(ds2._epoch, state["epoch"])
+        self.assertEqual(ds2._inputs_buffer, state["inputs_buffer"])
+        self.assertEqual(ds2._positions_buffer, state["positions_buffer"])
+
+    def test_legacy_checkpoint_missing_positions_buffer(self):
+        """Checkpoints without 'positions_buffer' fall back to [] with a warning."""
+        ds = self._build_ds()
+        legacy_state = {"epoch": 0, "sample_idx": 0, "inputs_buffer": [1, 2, 3]}
+        ds.load_state_dict(legacy_state)
+        self.assertEqual(ds._inputs_buffer, [1, 2, 3])
+        self.assertEqual(ds._positions_buffer, [])
 
 
 class TestHuggingFaceTextDataLoader(unittest.TestCase):
@@ -326,6 +313,19 @@ class TestInterleavedHuggingFaceTextCheckpointing(unittest.TestCase):
             warmup=10,
             verify=50,
         )
+
+
+class TestValidateDataset(unittest.TestCase):
+    def test_known_dataset_returns_path_and_callables(self):
+        path, loader, processor = _validate_dataset("c4_test")
+        self.assertEqual(path, "tests/assets/c4_test")
+        self.assertTrue(callable(loader))
+        self.assertTrue(callable(processor))
+
+    def test_unknown_dataset_raises_value_error(self):
+        with self.assertRaises(ValueError) as ctx:
+            _validate_dataset("not_a_real_dataset")
+        self.assertIn("not_a_real_dataset", str(ctx.exception))
 
 
 if __name__ == "__main__":

@@ -201,7 +201,11 @@ class TestChatDatasetCheckpointing(unittest.TestCase):
         next(it)
         state = chat_ds.state_dict()
 
-        for key in ("sample_idx", "epoch", "inputs_buffer", "labels_buffer", "positions_buffer"):
+        for key in (
+            "sample_idx", "epoch",
+            "inputs_buffer", "labels_buffer", "positions_buffer",
+            "pending_input_ids", "pending_label_ids",
+        ):
             self.assertIn(key, state)
         self.assertGreater(state["sample_idx"], 0)
         self.assertEqual(state["epoch"], 0)
@@ -210,6 +214,11 @@ class TestChatDatasetCheckpointing(unittest.TestCase):
         chat_ds_resumed.load_state_dict(state)
         self.assertEqual(chat_ds_resumed._sample_idx, state["sample_idx"])
         self.assertEqual(chat_ds_resumed._epoch, state["epoch"])
+        self.assertEqual(chat_ds_resumed._inputs_buffer, state["inputs_buffer"])
+        self.assertEqual(chat_ds_resumed._labels_buffer, state["labels_buffer"])
+        self.assertEqual(chat_ds_resumed._positions_buffer, state["positions_buffer"])
+        self.assertEqual(chat_ds_resumed._pending_input_ids, state["pending_input_ids"])
+        self.assertEqual(chat_ds_resumed._pending_label_ids, state["pending_label_ids"])
 
         remaining = list(chat_ds_resumed)
         self.assertGreater(len(remaining), 0)
@@ -329,6 +338,21 @@ class TestInterleavedChatCheckpointing(unittest.TestCase):
             warmup=30,
             verify=20,
         )
+
+
+class TestChatDataLoaderConfig(unittest.TestCase):
+    def test_missing_dataset_path_raises_value_error(self):
+        """ChatDataLoader.Config must raise ValueError when dataset_path is not set."""
+        with self.assertRaises(ValueError) as ctx:
+            ChatDataLoader.Config(sample_processor=lambda x: x)
+        self.assertIn("dataset_path", str(ctx.exception))
+
+    def test_valid_config_constructed_without_error(self):
+        config = ChatDataLoader.Config(
+            dataset_path="json",
+            sample_processor=lambda x: x,
+        )
+        self.assertEqual(config.dataset_path, "json")
 
 
 if __name__ == "__main__":
