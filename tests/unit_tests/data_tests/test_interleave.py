@@ -4,13 +4,24 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Unit tests for InterleavedDataset."""
+"""Tests for the ``InterleavedDataset`` primitive and for the
+``InterleavedHFDataLoader`` config validation shared by all flavors.
+
+Loader config validation is tested once here (via a concrete flavor
+subclass) because the validation lives on the base class; retesting
+it in every flavor file would be redundant.
+"""
+
 import unittest
 from copy import deepcopy
 
 from torch.utils.data import IterableDataset as TorchIterableDataset
 
-from torchtitan.hf_datasets.interleave import InterleavedDataset
+from torchtitan.hf_datasets.base import InterleavedDataset
+from torchtitan.hf_datasets.text import (
+    HFDataSource,
+    InterleavedHuggingFaceTextDataLoader,
+)
 
 
 class _MockDataset(TorchIterableDataset):
@@ -35,7 +46,7 @@ class _MockDataset(TorchIterableDataset):
 
 
 class _NoCheckpointDataset:
-    """Missing state_dict / load_state_dict — must be rejected by InterleavedDataset."""
+    """Missing state_dict / load_state_dict — must be rejected."""
 
     def __iter__(self):
         yield from range(5)
@@ -80,27 +91,24 @@ class TestInterleavedDatasetIteration(unittest.TestCase):
     def test_stops_on_first_source_exhaustion(self):
         """When one source runs out, iteration stops immediately even if
         others still have data."""
-        ds_short = _MockDataset([99])  # 1 item
-        ds_long = _MockDataset(list(range(50)))  # 50 items
+        ds_short = _MockDataset([99])
+        ds_long = _MockDataset(list(range(50)))
         samples = list(InterleavedDataset([ds_short, ds_long], [1.0, 1.0], seed=0))
 
         self.assertIn(99, samples)
-        # Long source is cut short
         long_samples = [v for v in samples if v != 99]
         self.assertGreater(len(long_samples), 0)
         self.assertLess(len(long_samples), 50)
 
     def test_sampling_respects_weight_ratio(self):
         """Higher-weighted source is drawn proportionally more often."""
-        # Use distinct value ranges to identify source without source_idx
-        ds_a = _MockDataset(list(range(1000)))  # values 0–999
-        ds_b = _MockDataset(list(range(1000, 2000)))  # values 1000–1999
+        ds_a = _MockDataset(list(range(1000)))
+        ds_b = _MockDataset(list(range(1000, 2000)))
         samples = list(InterleavedDataset([ds_a, ds_b], [1.0, 9.0], seed=7))
 
         count_a = sum(1 for v in samples if v < 1000)
         count_b = sum(1 for v in samples if v >= 1000)
-        # ds_a (lower weight) exhausts first; draw ratio should be roughly 1:9
-        self.assertGreater(count_b / count_a, 6.0)  # generous tolerance
+        self.assertGreater(count_b / count_a, 6.0)
 
     def test_deterministic_with_same_seed(self):
         def run(seed):
@@ -121,7 +129,6 @@ class TestInterleavedDatasetCheckpointing(unittest.TestCase):
         self.assertEqual(len(sd["sources"]), 1)
 
     def test_source_state_delegated_to_child(self):
-        """sources[i] is exactly what child.state_dict() returns."""
         ds = _MockDataset(list(range(5)))
         interleaved = InterleavedDataset([ds], [1.0], seed=0)
         it = iter(interleaved)
@@ -130,7 +137,6 @@ class TestInterleavedDatasetCheckpointing(unittest.TestCase):
         self.assertEqual(sd["sources"][0], ds.state_dict())
 
     def test_resume_produces_same_tail(self):
-        """Restoring state mid-iteration continues with identical sample order."""
         ds_a = _MockDataset(list(range(10)))
         ds_b = _MockDataset(list(range(10, 20)))
         interleaved = InterleavedDataset([ds_a, ds_b], [1.0, 1.0], seed=42)
@@ -148,7 +154,6 @@ class TestInterleavedDatasetCheckpointing(unittest.TestCase):
         self.assertEqual(list(interleaved2), tail_original)
 
     def test_resume_restores_rng_state(self):
-        """After load_state_dict, the interleaver RNG produces the same sequence."""
         ds_a = _MockDataset(list(range(20)))
         ds_b = _MockDataset(list(range(20, 40)))
         interleaved = InterleavedDataset([ds_a, ds_b], [1.0, 1.0], seed=13)
@@ -164,6 +169,28 @@ class TestInterleavedDatasetCheckpointing(unittest.TestCase):
         interleaved2 = InterleavedDataset([ds_a2, ds_b2], [1.0, 1.0], seed=13)
         interleaved2.load_state_dict(state)
         self.assertEqual(list(interleaved2), original_tail)
+
+
+class TestInterleavedLoaderConfigValidation(unittest.TestCase):
+    """Validation lives on ``InterleavedHFDataLoader.Config.__post_init__``;
+    we exercise it through one concrete flavor (``HuggingFaceText``) and
+    rely on it being shared by all flavors (chat, mm, …)."""
+
+    def test_rejects_empty_sources(self):
+        with self.assertRaises(ValueError) as ctx:
+            InterleavedHuggingFaceTextDataLoader.Config(sources=[], seed=42)
+        self.assertIn("At least one source", str(ctx.exception))
+
+    def test_rejects_mixed_infinite(self):
+        with self.assertRaises(ValueError) as ctx:
+            InterleavedHuggingFaceTextDataLoader.Config(
+                sources=[
+                    HFDataSource(dataset="c4_test", weight=1.0, infinite=True),
+                    HFDataSource(dataset="c4_test", weight=1.0, infinite=False),
+                ],
+                seed=42,
+            )
+        self.assertIn("infinite", str(ctx.exception))
 
 
 if __name__ == "__main__":

@@ -2,13 +2,6 @@
 
 `torchtitan` is designed to work seamlessly with most HuggingFace datasets. It supports three training flavours — **pre-training** (plain text), **instruction-tuning / SFT** (chat), and **multimodal** (vision) — each with its own dataloader. Both text flavours support single-source and multi-source interleaved configurations.
 
-## Dataset file locations
-
-```
-torchtitan/hf_datasets/text_datasets.py        # pre-training and SFT
-torchtitan/hf_datasets/multimodal/mm_datasets.py  # vision
-```
-
 ---
 
 ## Pre-training datasets
@@ -70,7 +63,7 @@ The `ChatDataLoader` handles single-turn `[user, assistant]` message pairs. It t
 ### Configuring a chat dataloader
 
 ```python
-from torchtitan.hf_datasets.text_datasets import ChatDataLoader
+from torchtitan.hf_datasets.text import ChatDataLoader
 
 def process_gsm8k(sample: dict) -> list[dict]:
     return [
@@ -97,7 +90,7 @@ All sources must share the same `infinite` setting.
 ### Interleaved pre-training
 
 ```python
-from torchtitan.hf_datasets.text_datasets import (
+from torchtitan.hf_datasets.text import (
     HFDataSource,
     InterleavedHuggingFaceTextDataLoader,
 )
@@ -115,7 +108,7 @@ dataloader=InterleavedHuggingFaceTextDataLoader.Config(
 ### Interleaved SFT
 
 ```python
-from torchtitan.hf_datasets.text_datasets import (
+from torchtitan.hf_datasets.text import (
     ChatDataSource,
     InterleavedChatDataLoader,
 )
@@ -165,6 +158,17 @@ Interleaved dataloaders are fully stateful. The interleaver RNG and the state of
 
 ---
 
+## Extending to a new flavour
+
+New dataset types (e.g. audio) follow the same two-layer pattern used by text and multimodal:
+
+1. **Dataset class** subclasses `HFDatasetBase` and implements `__iter__`, `_state_extras`, and `_load_state_extras`. The base owns distributed sharding, epoch bookkeeping, re-loop shuffling, and the map-style / iterable-style checkpointing branches.
+2. **Dataloader class** subclasses `HFDataLoader` and implements `_build_dataset`, returning either a single `HFDatasetBase` (single-source flavour) or an `InterleavedDataset` wrapping several (multi-source flavour). A `_build_collate_fn` hook is available if the flavour needs a custom collator (as multimodal does).
+
+For multi-source flavours, declare `sources: list[YourSource]` and `seed: int` on your `Config` and validate them in `__post_init__` (empty `sources`, mixed `infinite`) — see `InterleavedHuggingFaceTextDataLoader.Config` and `InterleavedChatDataLoader.Config` for reference. A small per-flavour `_build_*_dataset(source, ...)` helper, called once for the single-source builder and in a comprehension for the interleaved builder, keeps the per-source construction in one place.
+
+---
+
 ## Summary
 
 | Use case | Dataloader |
@@ -173,4 +177,4 @@ Interleaved dataloaders are fully stateful. The interleaver RNG and the state of
 | Multiple pre-training sources | `InterleavedHuggingFaceTextDataLoader` |
 | Single SFT source | `ChatDataLoader` |
 | Multiple SFT sources | `InterleavedChatDataLoader` |
-| Multimodal (vision + text) | `MultiModalDataLoader` |
+| Multimodal (vision + text) | `MMDataLoader` |

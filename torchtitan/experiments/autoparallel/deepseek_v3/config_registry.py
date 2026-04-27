@@ -14,7 +14,7 @@ from torchtitan.config import (
     TrainingConfig,
 )
 from torchtitan.experiments.autoparallel.configs import AutoParallelConfig
-from torchtitan.hf_datasets.text_datasets import HuggingFaceTextDataLoader
+from torchtitan.hf_datasets.text import HuggingFaceTextDataLoader
 
 from . import model_registry
 

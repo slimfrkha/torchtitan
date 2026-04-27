@@ -74,9 +74,10 @@ from torch.utils.data import IterableDataset
 
 from torchtitan.components.dataloader import ParallelAwareDataloader
 from torchtitan.components.loss import IGNORE_INDEX
-from torchtitan.components.tokenizer import MultiModalTokenizer
+from torchtitan.components.tokenizer import MultiModalTokenizer, BaseTokenizer
 
 from torchtitan.hf_datasets import DatasetConfig
+from torchtitan.hf_datasets.base import HFDatasetBase, HFDataLoader
 from torchtitan.tools.logging import logger
 from .mm_collator import MultiModalCollator
 from .utils.image import calculate_vision_tokens, process_image
@@ -295,7 +296,7 @@ def _validate_mm_dataset(
     return path, config.loader, config.sample_processor
 
 
-class HuggingFaceMultiModalDataset(IterableDataset, Stateful):
+class HuggingFaceMultiModalDataset(HFDatasetBase):
     """HuggingFace multimodal dataset with support for sample packing."""
 
     def __init__(
@@ -334,11 +335,18 @@ class HuggingFaceMultiModalDataset(IterableDataset, Stateful):
             ds = dataset_loader(path, subset=dataset_subset)
         else:
             ds = dataset_loader(path)
-        self._data = split_dataset_by_node(ds, dp_rank, dp_world_size)
 
-        self._tokenizer = tokenizer
+        super().__init__(
+            dataset=ds,
+            tokenizer=tokenizer,
+            seq_len=seq_len,
+            dp_rank=dp_rank,
+            dp_world_size=dp_world_size,
+            infinite=infinite,
+            dataset_id=dataset_name,
+        )
+
         self.batch_size = batch_size
-        self.seq_len = seq_len
         self.patch_size = patch_size
         self.temporal_patch_size = temporal_patch_size
         self.spatial_merge_size = spatial_merge_size
@@ -357,9 +365,6 @@ class HuggingFaceMultiModalDataset(IterableDataset, Stateful):
                 buffer_size=packing_buffer_size,
                 batch_size=batch_size,
             )
-        self.infinite = infinite
-        self._sample_idx = 0
-        self._hf_state_restored = False
 
     def __iter__(self):
         while True:
@@ -411,45 +416,20 @@ class HuggingFaceMultiModalDataset(IterableDataset, Stateful):
                 while self.packer.packed_samples:
                     yield self.packer.packed_samples.popleft()
 
-            if not self.infinite:
+            if not self._reloop_or_exhaust():
                 break
-            else:
-                self._sample_idx = 0
 
-    def _get_data_iter(self):
-        # TODO: add epoch counter and per-epoch reshuffling (see text_datasets.py)
+    def _state_extras(self) -> dict:
+        if not self.enable_packing:
+            return {}
+        return {
+            "packer_state": {
+                "sample_buffer": list(self.packer._sample_buffer.values()),
+                "packed_samples": list(self.packer.packed_samples),
+            }
+        }
 
-        # If HF dataset state was restored, iterator already starts
-        # at the right position — no need to skip.
-        if self._hf_state_restored:
-            self._hf_state_restored = False
-            return iter(self._data)
-
-        # Map-style dataset: use random access to skip directly
-        if isinstance(self._data, Dataset):
-            if self._sample_idx >= len(self._data):
-                return iter([])
-            return iter(self._data.select(range(self._sample_idx, len(self._data))))
-
-        # Streaming dataset without restored state: brute-force skip
-        it = iter(self._data)
-        if self._sample_idx > 0:
-            logger.info(
-                f"Skipping {self._sample_idx} samples to resume from checkpoint"
-            )
-            for _ in range(self._sample_idx):
-                next(it)
-
-        return it
-
-    def load_state_dict(self, state_dict):
-        self._sample_idx = state_dict["sample_idx"]
-
-        # Restore HF dataset state if available, enabling fast resume
-        if "hf_dataset_state" in state_dict and hasattr(self._data, "load_state_dict"):
-            self._data.load_state_dict(state_dict["hf_dataset_state"])
-            self._hf_state_restored = True
-
+    def _load_state_extras(self, state_dict: dict) -> None:
         if self.enable_packing and "packer_state" in state_dict:
             packer_state = state_dict["packer_state"]
             self.packer._sample_buffer = {
@@ -459,36 +439,16 @@ class HuggingFaceMultiModalDataset(IterableDataset, Stateful):
             self.packer.packed_samples.clear()
             self.packer.packed_samples.extend(packer_state["packed_samples"])
 
-    def state_dict(self):
-        state = {"sample_idx": self._sample_idx}
-
-        # Save HF dataset state for fast resume if supported
-        if hasattr(self._data, "state_dict"):
-            state["hf_dataset_state"] = self._data.state_dict()
-
-        if self.enable_packing:
-            # pyrefly: ignore [bad-typed-dict-key]
-            state["packer_state"] = {
-                "sample_buffer": list(self.packer._sample_buffer.values()),
-                "packed_samples": list(self.packer.packed_samples),
-            }
-
-        return state
-
-
-class MMDataLoader(ParallelAwareDataloader):
+class MMDataLoader(HFDataLoader):
     """Configurable multimodal dataloader for VLM training."""
 
     @dataclass(kw_only=True, slots=True)
-    class Config(ParallelAwareDataloader.Config):
+    class Config(HFDataLoader.Config):
         dataset: str = "cc12m-test"
         """Dataset to use"""
 
         dataset_subset: str = ""
         """Dataset subset/config name."""
-
-        infinite: bool = True
-        """Whether to loop the dataset infinitely"""
 
         # Batching configs
         packing_buffer_size: int = 0
@@ -531,42 +491,52 @@ class MMDataLoader(ParallelAwareDataloader):
         video_max_frames: int = 768
         """Maximum number of frames to sample from a video."""
 
-    def __init__(
+    def _build_dataset(
         self,
-        config: Config,
+        source,
         *,
-        dp_world_size: int,
-        dp_rank: int,
-        tokenizer: MultiModalTokenizer,
+        tokenizer: BaseTokenizer,
         seq_len: int,
+        dp_rank: int,
+        dp_world_size: int,
         local_batch_size: int,
-        **kwargs,
     ):
-        dataset = HuggingFaceMultiModalDataset(
-            dataset_name=config.dataset,
-            dataset_path=config.dataset_path,
+        assert isinstance(tokenizer, MultiModalTokenizer)
+        return HuggingFaceMultiModalDataset(
+            dataset_name=source.dataset,
+            dataset_path=source.dataset_path,
             tokenizer=tokenizer,
             batch_size=local_batch_size,
             seq_len=seq_len,
-            patch_size=config.patch_size,
-            temporal_patch_size=config.temporal_patch_size,
-            spatial_merge_size=config.spatial_merge_size,
-            min_pixels=config.min_pixels,
-            max_pixels=config.max_pixels,
-            image_mean=config.image_mean,
-            image_std=config.image_std,
-            packing_buffer_size=config.packing_buffer_size,
+            patch_size=source.patch_size,
+            temporal_patch_size=source.temporal_patch_size,
+            spatial_merge_size=source.spatial_merge_size,
+            min_pixels=source.min_pixels,
+            max_pixels=source.max_pixels,
+            image_mean=source.image_mean,
+            image_std=source.image_std,
+            packing_buffer_size=source.packing_buffer_size,
             dp_rank=dp_rank,
             dp_world_size=dp_world_size,
-            infinite=config.infinite,
-            video_dir=config.video_dir,
-            video_fps=config.video_fps,
-            video_min_frames=config.video_min_frames,
-            video_max_frames=config.video_max_frames,
-            dataset_subset=config.dataset_subset,
+            infinite=source.infinite,
+            video_dir=source.video_dir,
+            video_fps=source.video_fps,
+            video_min_frames=source.video_min_frames,
+            video_max_frames=source.video_max_frames,
+            dataset_subset=source.dataset_subset,
         )
 
-        collate_fn = MultiModalCollator(
+    def _build_collate_fn(
+        self,
+        config: HFDataLoader.Config,
+        *,
+        tokenizer: BaseTokenizer,
+        seq_len: int,
+        local_batch_size: int,
+    ):
+        assert isinstance(tokenizer, MultiModalTokenizer)
+        assert isinstance(config, MMDataLoader.Config)
+        return MultiModalCollator(
             batch_size=local_batch_size,
             seq_len=seq_len,
             max_images_per_batch=config.max_images_per_batch,
@@ -574,20 +544,4 @@ class MMDataLoader(ParallelAwareDataloader):
             temporal_patch_size=config.temporal_patch_size,
             spatial_merge_size=config.spatial_merge_size,
             tokenizer=tokenizer,
-        )
-
-        dataloader_kwargs = {
-            "num_workers": config.num_workers,
-            "persistent_workers": config.persistent_workers,
-            "pin_memory": config.pin_memory,
-            "prefetch_factor": config.prefetch_factor,
-            "batch_size": local_batch_size,
-            "collate_fn": collate_fn,
-        }
-
-        super().__init__(
-            dataset,
-            dp_rank=dp_rank,
-            dp_world_size=dp_world_size,
-            **dataloader_kwargs,
         )
