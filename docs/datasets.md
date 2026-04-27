@@ -163,7 +163,9 @@ Interleaved dataloaders are fully stateful. The interleaver RNG and the state of
 New dataset types (e.g. audio) follow the same two-layer pattern used by text and multimodal:
 
 1. **Dataset class** subclasses `HFDatasetBase` and implements `__iter__`, `_state_extras`, and `_load_state_extras`. The base owns distributed sharding, epoch bookkeeping, re-loop shuffling, and the map-style / iterable-style checkpointing branches.
-2. **Dataloader class** subclasses `HFDataLoader` (single-source) or `InterleavedHFDataLoader` (multi-source) and implements `_build_dataset`. A `_build_collate_fn` hook is available if the flavour needs a custom collator (as multimodal does).
+2. **Dataloader class** subclasses `HFDataLoader` and implements `_build_dataset`, returning either a single `HFDatasetBase` (single-source flavour) or an `InterleavedDataset` wrapping several (multi-source flavour). A `_build_collate_fn` hook is available if the flavour needs a custom collator (as multimodal does).
+
+For multi-source flavours, declare `sources: list[YourSource]` and `seed: int` on your `Config` and validate them in `__post_init__` (empty `sources`, mixed `infinite`) — see `InterleavedHuggingFaceTextDataLoader.Config` and `InterleavedChatDataLoader.Config` for reference. A small per-flavour `_build_*_dataset(source, ...)` helper, called once for the single-source builder and in a comprehension for the interleaved builder, keeps the per-source construction in one place.
 
 ---
 
