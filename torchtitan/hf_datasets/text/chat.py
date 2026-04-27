@@ -14,11 +14,7 @@ from datasets import Dataset, load_dataset
 
 from torchtitan.components.loss import IGNORE_INDEX
 from torchtitan.components.tokenizer import BaseTokenizer
-from torchtitan.hf_datasets.base import (
-    HFDatasetBase,
-    HFDataLoader,
-    InterleavedHFDataLoader,
-)
+from torchtitan.hf_datasets.base import HFDataLoader, HFDatasetBase, InterleavedDataset
 from torchtitan.tools.logging import logger
 
 
@@ -226,32 +222,33 @@ class ChatDataset(HFDatasetBase):
         self._pending_label_ids = state_dict["pending_label_ids"]
 
 
-class _ChatDatasetMixin:
-    """Shared _build_dataset for single- and multi-source chat loaders."""
+def _build_chat_dataset(
+    source,
+    *,
+    tokenizer: BaseTokenizer,
+    seq_len: int,
+    dp_rank: int,
+    dp_world_size: int,
+) -> ChatDataset:
+    """Build a ``ChatDataset`` from a Config or per-source entry.
 
-    def _build_dataset(
-        self,
-        source,
-        *,
-        tokenizer: BaseTokenizer,
-        seq_len: int,
-        dp_rank: int,
-        dp_world_size: int,
-        local_batch_size: int,
-    ):
-        dataset = load_dataset(source.dataset_path, **source.load_dataset_kwargs)
-        return ChatDataset(
-            dataset=dataset,  # pyrefly: ignore [bad-argument-type]
-            tokenizer=tokenizer,
-            sample_processor=source.sample_processor,
-            seq_len=seq_len,
-            dp_rank=dp_rank,
-            dp_world_size=dp_world_size,
-            infinite=source.infinite,
-        )
+    Duck-typed on ``dataset_path``, ``load_dataset_kwargs``,
+    ``sample_processor``, ``infinite`` — works for both
+    ``ChatDataLoader.Config`` and ``ChatDataSource``.
+    """
+    dataset = load_dataset(source.dataset_path, **source.load_dataset_kwargs)
+    return ChatDataset(
+        dataset=dataset,
+        tokenizer=tokenizer,
+        sample_processor=source.sample_processor,
+        seq_len=seq_len,
+        dp_rank=dp_rank,
+        dp_world_size=dp_world_size,
+        infinite=source.infinite,
+    )
 
 
-class ChatDataLoader(_ChatDatasetMixin, HFDataLoader):
+class ChatDataLoader(HFDataLoader):
     """Chat dataloader for instruction/conversation datasets."""
 
     @dataclass(kw_only=True, slots=True)
@@ -272,6 +269,24 @@ class ChatDataLoader(_ChatDatasetMixin, HFDataLoader):
                     "(e.g., 'openai/gsm8k' or 'json')."
                 )
 
+    def _build_dataset(
+        self,
+        config,
+        *,
+        tokenizer: BaseTokenizer,
+        seq_len: int,
+        dp_rank: int,
+        dp_world_size: int,
+        local_batch_size: int,
+    ):
+        return _build_chat_dataset(
+            config,
+            tokenizer=tokenizer,
+            seq_len=seq_len,
+            dp_rank=dp_rank,
+            dp_world_size=dp_world_size,
+        )
+
 
 @dataclass(kw_only=True, slots=True)
 class ChatDataSource(ChatDataLoader.Config):
@@ -281,10 +296,48 @@ class ChatDataSource(ChatDataLoader.Config):
     """Data Source sampling weight"""
 
 
-class InterleavedChatDataLoader(_ChatDatasetMixin, InterleavedHFDataLoader):
+class InterleavedChatDataLoader(HFDataLoader):
     """Configurable chat dataloader that wraps multiple ChatDataset."""
 
     @dataclass(kw_only=True, slots=True)
-    class Config(InterleavedHFDataLoader.Config):
+    class Config(HFDataLoader.Config):
         sources: list[ChatDataSource] = field(default_factory=list)
         """List of datasources to interleave"""
+
+        seed: int = 42
+        """Interleaving seed"""
+
+        def __post_init__(self) -> None:
+            if not self.sources:
+                raise ValueError("At least one source should be defined.")
+            infinite_values = [source.infinite for source in self.sources]
+            if len(set(infinite_values)) > 1:
+                raise ValueError(
+                    f"All data sources must have the same 'infinite' setting, "
+                    f"got: {infinite_values}"
+                )
+
+    def _build_dataset(
+        self,
+        config,
+        *,
+        tokenizer: BaseTokenizer,
+        seq_len: int,
+        dp_rank: int,
+        dp_world_size: int,
+        local_batch_size: int,
+    ):
+        return InterleavedDataset(
+            datasets=[
+                _build_chat_dataset(
+                    source,
+                    tokenizer=tokenizer,
+                    seq_len=seq_len,
+                    dp_rank=dp_rank,
+                    dp_world_size=dp_world_size,
+                )
+                for source in config.sources
+            ],
+            weights=[source.weight for source in config.sources],
+            seed=config.seed,
+        )

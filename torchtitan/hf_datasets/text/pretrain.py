@@ -14,11 +14,7 @@ from datasets import Dataset, load_dataset
 
 from torchtitan.components.tokenizer import BaseTokenizer
 from torchtitan.hf_datasets import DatasetConfig
-from torchtitan.hf_datasets.base import (
-    HFDatasetBase,
-    HFDataLoader,
-    InterleavedHFDataLoader,
-)
+from torchtitan.hf_datasets.base import HFDataLoader, HFDatasetBase, InterleavedDataset
 from torchtitan.tools.logging import logger
 
 
@@ -168,31 +164,32 @@ class HuggingFaceTextDataset(HFDatasetBase):
         self._positions_buffer = state_dict.get("positions_buffer", [])
 
 
-class _HFTextDatasetMixin:
-    """Shared _build_dataset for single- and multi-source text pretrain loaders."""
+def _build_text_dataset(
+    source,
+    *,
+    tokenizer: BaseTokenizer,
+    seq_len: int,
+    dp_rank: int,
+    dp_world_size: int,
+) -> HuggingFaceTextDataset:
+    """Build a ``HuggingFaceTextDataset`` from a Config or per-source entry.
 
-    def _build_dataset(
-        self,
-        source,
-        *,
-        tokenizer: BaseTokenizer,
-        seq_len: int,
-        dp_rank: int,
-        dp_world_size: int,
-        local_batch_size: int,
-    ):
-        return HuggingFaceTextDataset(
-            dataset_name=source.dataset,
-            dataset_path=source.dataset_path,
-            tokenizer=tokenizer,
-            seq_len=seq_len,
-            dp_rank=dp_rank,
-            dp_world_size=dp_world_size,
-            infinite=source.infinite,
-        )
+    The argument is duck-typed: anything with ``dataset``, ``dataset_path``,
+    and ``infinite`` works (i.e. both ``HuggingFaceTextDataLoader.Config``
+    and ``HFDataSource``).
+    """
+    return HuggingFaceTextDataset(
+        dataset_name=source.dataset,
+        dataset_path=source.dataset_path,
+        tokenizer=tokenizer,
+        seq_len=seq_len,
+        dp_rank=dp_rank,
+        dp_world_size=dp_world_size,
+        infinite=source.infinite,
+    )
 
 
-class HuggingFaceTextDataLoader(_HFTextDatasetMixin, HFDataLoader):
+class HuggingFaceTextDataLoader(HFDataLoader):
     """Configurable text dataloader that wraps HuggingFaceTextDataset.
 
     This dataloader can be used for both training and validation by
@@ -204,6 +201,24 @@ class HuggingFaceTextDataLoader(_HFTextDatasetMixin, HFDataLoader):
         dataset: str = "c4_test"
         """Dataset to use"""
 
+    def _build_dataset(
+        self,
+        config,
+        *,
+        tokenizer: BaseTokenizer,
+        seq_len: int,
+        dp_rank: int,
+        dp_world_size: int,
+        local_batch_size: int,
+    ):
+        return _build_text_dataset(
+            config,
+            tokenizer=tokenizer,
+            seq_len=seq_len,
+            dp_rank=dp_rank,
+            dp_world_size=dp_world_size,
+        )
+
 
 @dataclass(kw_only=True, slots=True)
 class HFDataSource(HuggingFaceTextDataLoader.Config):
@@ -213,10 +228,48 @@ class HFDataSource(HuggingFaceTextDataLoader.Config):
     """Data Source sampling weight"""
 
 
-class InterleavedHuggingFaceTextDataLoader(_HFTextDatasetMixin, InterleavedHFDataLoader):
+class InterleavedHuggingFaceTextDataLoader(HFDataLoader):
     """Configurable text dataloader that wraps multiple HuggingFaceTextDataset."""
 
     @dataclass(kw_only=True, slots=True)
-    class Config(InterleavedHFDataLoader.Config):
+    class Config(HFDataLoader.Config):
         sources: list[HFDataSource] = field(default_factory=lambda: [HFDataSource()])
         """List of datasources to interleave"""
+
+        seed: int = 42
+        """Interleaving seed"""
+
+        def __post_init__(self) -> None:
+            if not self.sources:
+                raise ValueError("At least one source should be defined.")
+            infinite_values = [source.infinite for source in self.sources]
+            if len(set(infinite_values)) > 1:
+                raise ValueError(
+                    f"All data sources must have the same 'infinite' setting, "
+                    f"got: {infinite_values}"
+                )
+
+    def _build_dataset(
+        self,
+        config,
+        *,
+        tokenizer: BaseTokenizer,
+        seq_len: int,
+        dp_rank: int,
+        dp_world_size: int,
+        local_batch_size: int,
+    ):
+        return InterleavedDataset(
+            datasets=[
+                _build_text_dataset(
+                    source,
+                    tokenizer=tokenizer,
+                    seq_len=seq_len,
+                    dp_rank=dp_rank,
+                    dp_world_size=dp_world_size,
+                )
+                for source in config.sources
+            ],
+            weights=[source.weight for source in config.sources],
+            seed=config.seed,
+        )
