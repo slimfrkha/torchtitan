@@ -66,6 +66,7 @@ def _make_iterable_ds(n: int = 20, infinite: bool = False) -> _ConcreteDataset:
         dataset_id="test_iterable",
     )
 
+
 class TestAdvanceEpoch(unittest.TestCase):
     def test_map_style_reshuffles(self):
         ds = _make_map_ds(infinite=True)
@@ -99,6 +100,7 @@ class TestAdvanceEpoch(unittest.TestCase):
         ds._advance_epoch()
         self.assertEqual(ds._epoch, 1)
         self.assertEqual(ds._sample_idx, 0)
+
 
 class TestGetDataIter(unittest.TestCase):
     def test_map_style_at_end_returns_empty(self):

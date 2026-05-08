@@ -19,11 +19,8 @@ from torchtitan.hf_datasets.text import (
     InterleavedChatDataLoader,
 )
 
-from ._helpers import (
-    SFT_DATA_PATH,
-    TOKENIZER_PATH,
-    assert_dataloader_resumes,
-)
+from ._helpers import assert_dataloader_resumes, SFT_DATA_PATH, TOKENIZER_PATH
+
 
 def process_chat_sample(sample):
     """Convert a ``{"question", "answer"}`` sample into [user, assistant] messages."""
@@ -202,9 +199,13 @@ class TestChatDatasetCheckpointing(unittest.TestCase):
         state = chat_ds.state_dict()
 
         for key in (
-            "sample_idx", "epoch",
-            "inputs_buffer", "labels_buffer", "positions_buffer",
-            "pending_input_ids", "pending_label_ids",
+            "sample_idx",
+            "epoch",
+            "inputs_buffer",
+            "labels_buffer",
+            "positions_buffer",
+            "pending_input_ids",
+            "pending_label_ids",
         ):
             self.assertIn(key, state)
         self.assertGreater(state["sample_idx"], 0)
@@ -245,6 +246,7 @@ class TestChatDatasetCheckpointing(unittest.TestCase):
                     seq_len=128,
                     local_batch_size=1,
                 )
+
             return _factory
 
         for streaming in [True, False]:

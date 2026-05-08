@@ -11,7 +11,7 @@ import unittest
 from torchtitan.components.tokenizer import MultiModalTokenizer
 from torchtitan.hf_datasets.multimodal.mm_datasets import MMDataLoader
 
-from ._helpers import TOKENIZER_PATH, assert_dataloader_resumes
+from ._helpers import assert_dataloader_resumes, TOKENIZER_PATH
 
 
 _TOKENIZER_CONFIG = MultiModalTokenizer.Config(

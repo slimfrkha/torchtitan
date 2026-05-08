@@ -21,11 +21,7 @@ from torchtitan.hf_datasets.text import (
 )
 from torchtitan.hf_datasets.text.pretrain import _validate_dataset
 
-from ._helpers import (
-    DummyTokenizer,
-    TOKENIZER_PATH,
-    assert_dataloader_resumes,
-)
+from ._helpers import assert_dataloader_resumes, DummyTokenizer, TOKENIZER_PATH
 
 
 class TestHuggingFaceTextDataset(unittest.TestCase):
