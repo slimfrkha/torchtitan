@@ -6,7 +6,7 @@
 
 """Unit tests for HFDatasetBase (torchtitan/hf_datasets/base/dataset.py).
 
-Covers _reloop_or_exhaust, _get_data_iter, and state_dict / load_state_dict
+Covers _advance_epoch, _get_data_iter, and state_dict / load_state_dict
 for both map-style (datasets.Dataset) and iterable-style (IterableDataset)
 backends.  The concrete end-to-end checkpoint behaviour of the text and
 multimodal loaders is tested separately in test_text_pretrain.py et al.
@@ -66,23 +66,17 @@ def _make_iterable_ds(n: int = 20, infinite: bool = False) -> _ConcreteDataset:
         dataset_id="test_iterable",
     )
 
-
-class TestReloopOrExhaust(unittest.TestCase):
-    def test_finite_returns_false(self):
-        ds = _make_map_ds(infinite=False)
-        result = ds._reloop_or_exhaust()
-        self.assertFalse(result)
-        self.assertEqual(ds._epoch, 0)
-
-    def test_infinite_map_style_reshuffles(self):
+class TestAdvanceEpoch(unittest.TestCase):
+    def test_map_style_reshuffles(self):
         ds = _make_map_ds(infinite=True)
         original_data = ds._data
-        result = ds._reloop_or_exhaust()
-        self.assertTrue(result)
+        ds._sample_idx = 5
+        ds._advance_epoch()
         self.assertEqual(ds._epoch, 1)
+        self.assertEqual(ds._sample_idx, 0)
         self.assertIsNot(ds._data, original_data)
 
-    def test_infinite_iterable_calls_set_epoch(self):
+    def test_iterable_calls_set_epoch(self):
         ds = _make_iterable_ds(infinite=True)
         if not hasattr(ds._data, "set_epoch"):
             self.skipTest("IterableDataset.set_epoch not available in this HF version")
@@ -96,11 +90,15 @@ class TestReloopOrExhaust(unittest.TestCase):
 
         ds._data.set_epoch = tracking_set_epoch
 
-        result = ds._reloop_or_exhaust()
-        self.assertTrue(result)
+        ds._advance_epoch()
         self.assertEqual(ds._epoch, 1)
         self.assertEqual(called, [1])
 
+    def test_advances_regardless_of_infinite_flag(self):
+        ds = _make_map_ds(infinite=False)
+        ds._advance_epoch()
+        self.assertEqual(ds._epoch, 1)
+        self.assertEqual(ds._sample_idx, 0)
 
 class TestGetDataIter(unittest.TestCase):
     def test_map_style_at_end_returns_empty(self):
@@ -139,7 +137,7 @@ class TestStateDict(unittest.TestCase):
 
     def test_map_style_reshuffled_epoch_preserved(self):
         ds = _make_map_ds(n=20, infinite=True)
-        ds._reloop_or_exhaust()  # epoch → 1, data reshuffled
+        ds._advance_epoch()  # epoch → 1, data reshuffled
         ds._sample_idx = 4
         sd = ds.state_dict()
 
