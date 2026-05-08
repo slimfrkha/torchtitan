@@ -10,7 +10,7 @@ from functools import partial
 from typing import Any
 
 import torch
-from datasets import Dataset, load_dataset
+from datasets import load_dataset
 
 from torchtitan.components.tokenizer import BaseTokenizer
 from torchtitan.hf_datasets import DatasetConfig

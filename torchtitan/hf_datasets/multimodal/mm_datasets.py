@@ -67,17 +67,13 @@ from dataclasses import dataclass
 from typing import Any
 
 import torch
-from datasets import Dataset, load_dataset
-from datasets.distributed import split_dataset_by_node
-from torch.distributed.checkpoint.stateful import Stateful
-from torch.utils.data import IterableDataset
+from datasets import load_dataset
 
-from torchtitan.components.dataloader import ParallelAwareDataloader
 from torchtitan.components.loss import IGNORE_INDEX
-from torchtitan.components.tokenizer import MultiModalTokenizer, BaseTokenizer
+from torchtitan.components.tokenizer import BaseTokenizer, MultiModalTokenizer
 
 from torchtitan.hf_datasets import DatasetConfig
-from torchtitan.hf_datasets.base import HFDatasetBase, HFDataLoader
+from torchtitan.hf_datasets.base import HFDataLoader, HFDatasetBase
 from torchtitan.tools.logging import logger
 from .mm_collator import MultiModalCollator
 from .utils.image import calculate_vision_tokens, process_image
@@ -440,6 +436,7 @@ class HuggingFaceMultiModalDataset(HFDatasetBase):
             self.packer.packed_samples.clear()
             self.packer.packed_samples.extend(packer_state["packed_samples"])
 
+
 class MMDataLoader(HFDataLoader):
     """Configurable multimodal dataloader for VLM training."""
 
@@ -494,7 +491,7 @@ class MMDataLoader(HFDataLoader):
 
     def _build_dataset(
         self,
-        source,
+        config,
         *,
         tokenizer: BaseTokenizer,
         seq_len: int,
@@ -504,27 +501,27 @@ class MMDataLoader(HFDataLoader):
     ):
         assert isinstance(tokenizer, MultiModalTokenizer)
         return HuggingFaceMultiModalDataset(
-            dataset_name=source.dataset,
-            dataset_path=source.dataset_path,
+            dataset_name=config.dataset,
+            dataset_path=config.dataset_path,
             tokenizer=tokenizer,
             batch_size=local_batch_size,
             seq_len=seq_len,
-            patch_size=source.patch_size,
-            temporal_patch_size=source.temporal_patch_size,
-            spatial_merge_size=source.spatial_merge_size,
-            min_pixels=source.min_pixels,
-            max_pixels=source.max_pixels,
-            image_mean=source.image_mean,
-            image_std=source.image_std,
-            packing_buffer_size=source.packing_buffer_size,
+            patch_size=config.patch_size,
+            temporal_patch_size=config.temporal_patch_size,
+            spatial_merge_size=config.spatial_merge_size,
+            min_pixels=config.min_pixels,
+            max_pixels=config.max_pixels,
+            image_mean=config.image_mean,
+            image_std=config.image_std,
+            packing_buffer_size=config.packing_buffer_size,
             dp_rank=dp_rank,
             dp_world_size=dp_world_size,
-            infinite=source.infinite,
-            video_dir=source.video_dir,
-            video_fps=source.video_fps,
-            video_min_frames=source.video_min_frames,
-            video_max_frames=source.video_max_frames,
-            dataset_subset=source.dataset_subset,
+            infinite=config.infinite,
+            video_dir=config.video_dir,
+            video_fps=config.video_fps,
+            video_min_frames=config.video_min_frames,
+            video_max_frames=config.video_max_frames,
+            dataset_subset=config.dataset_subset,
         )
 
     def _build_collate_fn(
@@ -534,7 +531,7 @@ class MMDataLoader(HFDataLoader):
         tokenizer: BaseTokenizer,
         seq_len: int,
         local_batch_size: int,
-    ):
+    ) -> Callable:
         assert isinstance(tokenizer, MultiModalTokenizer)
         assert isinstance(config, MMDataLoader.Config)
         return MultiModalCollator(

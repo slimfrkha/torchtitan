@@ -3,8 +3,9 @@
 #
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
-
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from torch.utils.data import IterableDataset
 
@@ -46,7 +47,7 @@ class HFDataLoader(ParallelAwareDataloader):
             local_batch_size=local_batch_size,
         )
 
-        dl_kwargs = {
+        dl_kwargs: dict[str, Any] = {
             "num_workers": config.num_workers,
             "persistent_workers": config.persistent_workers,
             "pin_memory": config.pin_memory,
@@ -93,5 +94,5 @@ class HFDataLoader(ParallelAwareDataloader):
         tokenizer: BaseTokenizer,
         seq_len: int,
         local_batch_size: int,
-    ):
+    ) -> Callable | None:
         return None

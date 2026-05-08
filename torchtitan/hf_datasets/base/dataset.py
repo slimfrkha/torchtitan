@@ -4,6 +4,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+from collections.abc import Iterator
 from typing import Any, cast
 
 from datasets import Dataset
@@ -153,7 +154,7 @@ class HFDatasetBase(IterableDataset, Stateful):
             self._data.set_epoch(saved_epoch)
             self._data.load_state_dict(data_state)
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[Any]:
         raise NotImplementedError
 
     def _state_extras(self) -> dict[str, Any]:

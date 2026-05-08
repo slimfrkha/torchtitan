@@ -19,10 +19,7 @@ from torchtitan.config import (
     ParallelismConfig,
     TrainingConfig,
 )
-from torchtitan.hf_datasets.text import (
-    ChatDataLoader,
-    HuggingFaceTextDataLoader,
-)
+from torchtitan.hf_datasets.text import ChatDataLoader, HuggingFaceTextDataLoader
 from torchtitan.protocols.model_converter import ModelConvertersContainer
 from torchtitan.tools.profiler import Profiler
 from torchtitan.trainer import Trainer
