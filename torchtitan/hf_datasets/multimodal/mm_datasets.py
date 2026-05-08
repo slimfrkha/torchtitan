@@ -415,9 +415,10 @@ class HuggingFaceMultiModalDataset(HFDatasetBase):
                 # Drain any remainder that doesn't fill a full batch
                 while self.packer.packed_samples:
                     yield self.packer.packed_samples.popleft()
-
-            if not self._reloop_or_exhaust():
+            if not self.infinite:
+                logger.info(f"Dataset '{self.dataset_id}' has run out of data")
                 break
+            self._advance_epoch()
 
     def _state_extras(self) -> dict:
         if not self.enable_packing:

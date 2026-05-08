@@ -192,8 +192,10 @@ class ChatDataset(HFDatasetBase):
 
                 yield self._flush_buffers()
 
-            if not self._reloop_or_exhaust():
+            if not self.infinite:
+                logger.info(f"Dataset '{self.dataset_id}' has run out of data")
                 break
+            self._advance_epoch()
 
     def _flush_buffers(self):
         """Convert buffers to tensors, clear them, and return the batch."""

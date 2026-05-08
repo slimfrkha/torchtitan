@@ -27,9 +27,10 @@ class HFDatasetBase(IterableDataset, Stateful):
 
     Subclasses must implement:
       - ``__iter__``: tokenization + packing loop. Should increment
-        ``self._sample_idx`` per consumed sample, and call
-        ``self._reloop_or_exhaust()`` at the end of an iteration pass
-        over the dataset to either continue or break.
+        ``self._sample_idx`` per consumed sample. At the end of a pass
+        over the dataset, check ``self.infinite``: if ``False``, log that
+        the dataset has run out of data and break; otherwise call
+        ``self._advance_epoch()`` and continue.
       - ``_state_extras()``: dict of per-subclass state to checkpoint
         (buffers, pending tokens, etc.).
       - ``_load_state_extras(sd)``: restore state produced by
@@ -53,6 +54,8 @@ class HFDatasetBase(IterableDataset, Stateful):
         infinite: bool,
         dataset_id: str,
     ) -> None:
+        # Keep an unshuffled reference so map-style datasets can be re-shuffled
+        # deterministically on re-loop and on checkpoint resume.
         self._original_data = split_dataset_by_node(dataset, dp_rank, dp_world_size)
         self._data = self._original_data
         self._tokenizer = tokenizer
@@ -76,23 +79,23 @@ class HFDatasetBase(IterableDataset, Stateful):
             return iter(self._data.skip(self._sample_idx))
         return iter(self._data)
 
-    def _reloop_or_exhaust(self) -> bool:
-        """Call at the end of a pass over the dataset.
+    def _advance_epoch(self) -> None:
+        """Advance to the next epoch.
 
-        Returns ``True`` if iteration should continue — i.e. the dataset
-        is infinite and has just been re-looped (advances ``self._epoch``,
-        resets ``self._sample_idx``, re-shuffles map-style or calls
-        ``set_epoch`` iterable-style, logs the re-loop).
+        Resets ``self._sample_idx`` to ``0``, increments ``self._epoch``,
+        re-shuffles map-style datasets with a deterministic seed, calls
+        ``set_epoch(self._epoch)`` on iterable-style datasets, and logs the
+        re-loop event.
 
-        Returns ``False`` when the dataset is non-infinite and has run
-        out of data; the subclass ``__iter__`` should break.
+        Callers are responsible for checking ``self.infinite`` before
+        calling this — non-infinite datasets should terminate iteration
+        instead of advancing.
         """
-        if not self.infinite:
-            logger.warning(f"Dataset '{self.dataset_id}' has run out of data")
-            return False
-
         self._sample_idx = 0
         self._epoch += 1
+        # Ensures re-looping a dataset loaded from a checkpoint works correctly.
+        # Map-style datasets replay the same order unless we shuffle per epoch;
+        # iterable-style datasets honor set_epoch and re-shuffle internally.
         if isinstance(self._data, Dataset):
             self._data = cast(
                 Dataset,
@@ -103,10 +106,9 @@ class HFDatasetBase(IterableDataset, Stateful):
         elif hasattr(self._data, "set_epoch"):
             self._data.set_epoch(self._epoch)
 
-        logger.warning(
+        logger.info(
             f"Dataset '{self.dataset_id}' is being re-looped (epoch {self._epoch})"
         )
-        return True
 
     def state_dict(self) -> dict[str, Any]:
         sd: dict[str, Any] = {
@@ -122,6 +124,9 @@ class HFDatasetBase(IterableDataset, Stateful):
         return sd
 
     def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        # Older checkpoints predate per-epoch shuffle on re-loop; default to 0
+        # so resuming those runs stays numerically identical (epoch 0 is never
+        # shuffled).
         self._epoch = state_dict.get("epoch", 0)
         self._load_state_extras(state_dict)
 
@@ -138,7 +143,10 @@ class HFDatasetBase(IterableDataset, Stateful):
                     ),
                 )
         else:
-            assert "data" in state_dict
+            if "data" not in state_dict:
+                raise KeyError(
+                    "state_dict is missing 'data' key required to resume an iterable-style dataset"
+                )
             data_state = state_dict["data"]
             # HuggingFace IterableDataset sync epoch
             saved_epoch = data_state.get("epoch", 0)

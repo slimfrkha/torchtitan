@@ -144,9 +144,10 @@ class HuggingFaceTextDataset(HFDatasetBase):
                     label = x[1:]
                     positions = pos[:-1]
                     yield {"input": input, "positions": positions}, label
-
-            if not self._reloop_or_exhaust():
+            if not self.infinite:
+                logger.info(f"Dataset '{self.dataset_id}' has run out of data")
                 break
+            self._advance_epoch()
 
     def _state_extras(self) -> dict[str, Any]:
         return {
